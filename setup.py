@@ -9,6 +9,6 @@ setup(
     author_email='beliak@mail.ru',
     license='LGPLv3',
     packages=['djacoupche'],
-    scripts=['djacoupche'],
+    scripts=['bin/djacoupche'],
     zip_safe=False
 )
