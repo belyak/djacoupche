@@ -214,7 +214,7 @@ def parse_cmd_arguments():
 
     parser = argparse.ArgumentParser()
     parser.add_argument('--django_settings', metavar='django_settings', type=argparse.FileType(), nargs=1,
-                        help='path to the django settings file (containing INSTALLED_APPS)')
+                        help='path to the django settings file (containing INSTALLED_APPS)', required=True)
     parser.add_argument('--project_root', metavar="project_base", type=str, default=".", nargs='?',
                         help='the root directory for the project (manage.py located there usually)')
     parser.add_argument('--interactive', metavar='interactive', type=bool, default=False, nargs='?',
