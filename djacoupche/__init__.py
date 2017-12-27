@@ -1,0 +1,1 @@
+from .django_apps_coupling_checker import djacoupche
