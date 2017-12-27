@@ -1,3 +1,4 @@
+import argparse
 import ast
 import os
 from os import listdir
@@ -210,15 +211,16 @@ def perform_detection_with_manual_input():
 
 
 def parse_cmd_arguments():
-    import argparse
-
     parser = argparse.ArgumentParser()
-    parser.add_argument('--django_settings', metavar='django_settings', type=argparse.FileType(), nargs=1,
-                        help='path to the django settings file (containing INSTALLED_APPS)', required=True)
+
+    group = parser.add_mutually_exclusive_group(required=True)
+    group.add_argument('--django_settings', metavar='django_settings', type=argparse.FileType(), nargs=1,
+                       help='path to the django settings file (containing INSTALLED_APPS)')
+    group.add_argument('--interactive', action='store_true',
+                       help='start utility and ask user all the required parameters.')
+
     parser.add_argument('--project_root', metavar="project_base", type=str, default=".", nargs='?',
                         help='the root directory for the project (manage.py located there usually)')
-    parser.add_argument('--interactive', metavar='interactive', type=bool, default=False, nargs='?',
-                        help='start utility and ask user all the required parameters.')
 
     return parser.parse_args()
 
