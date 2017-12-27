@@ -27,6 +27,11 @@ NODE_PROCESS_FUNCS = {
 }
 
 
+def load_ast_module(module_path):
+    with open(module_path, "rb") as f:
+        return ast.parse(f.read())
+
+
 def normalize_relative_imports(packages, names):
     def normalize_relative_import(name: str):
         leading_dots_count = len(name) - len(name.lstrip("."))
@@ -64,7 +69,7 @@ def get_module_imports(project_base, package_file, module_file):
 
 
 def get_package_imports(project_base, name):
-    print("testing package (application)", name)
+    print("collecting imports from application {application}".format(application=name))
     files = [join(name, f) for f in listdir(name) if isfile(join(name, f)) and f.endswith('.py')]
 
     result = []
@@ -75,40 +80,41 @@ def get_package_imports(project_base, name):
     return result
 
 
-def get_installed_apps_using_ast_structure(ast_module):
-    extracted_installed_apps = None
-    """:type: list"""
+def get_installed_apps_using_ast(ast_module):
 
-    class AssignNodeVIsitor(ast.NodeVisitor):
+    class AssignNodeVisitor(ast.NodeVisitor):
+        def __init__(self):
+            super().__init__()
+            self.installed_apps = []
+
         def visit_Assign(self, node):
-            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "INSTALLED_APPS":
-                nonlocal extracted_installed_apps
-                if isinstance(node.value, ast.List):
-                    extracted_installed_apps = [n.s for n in node.value.elts]
+            if len(node.targets) == 1:
+                target_node = node.targets[0]
+
+                if isinstance(target_node, ast.Name) and target_node.id == "INSTALLED_APPS":
+                    if isinstance(node.value, ast.List):
+                        self.installed_apps = [n.s for n in node.value.elts]
 
             self.generic_visit(node)
 
-    AssignNodeVIsitor().visit(ast_module)
+    visitor = AssignNodeVisitor()
+    visitor.visit(ast_module)
 
-    return extracted_installed_apps
+    return visitor.installed_apps
 
 
 def get_installed_apps_using_ast_evaluation(ast_module):
     namespace = globals()
     co = compile(ast_module, "<ast>", "exec")
     exec(co, namespace)
-    return namespace.get('INSTALLED_APPS', [])
+    return namespace.get('INSTALLED_APPS', None)
 
 
 def get_custom_installed_apps(django_settings_module_path, project_root_path):
-    with open(django_settings_module_path, "rb") as f:
-        module = ast.parse(f.read())
+    ast_module = load_ast_module(django_settings_module_path)
 
-    extracted_installed_apps = get_installed_apps_using_ast_structure(module)
-
-    if extracted_installed_apps is None:
-        # could not detect INSTALLED_APPS defined as a list, trying to use eval to get the info:
-        extracted_installed_apps = get_installed_apps_using_ast_evaluation(module)
+    extracted_installed_apps = (get_installed_apps_using_ast(ast_module) or
+                                get_installed_apps_using_ast_evaluation(ast_module))
 
     if extracted_installed_apps is None:
         raise ValueError("Cannot find INSTALLED_APPS in file %s!" % django_settings_module_path)
@@ -127,7 +133,7 @@ def populate_modules_and_imports_structure(project_base, custom_installed_apps_d
 
 def remove_non_project_imports(modules_and_imports, custom_installed_apps):
     def include_import(i):
-        return any(app in i for app in custom_installed_apps)
+        return any(i.startswith(app) for app in custom_installed_apps)
 
     for module, imports, in modules_and_imports.items():
         modules_and_imports[module] = [i for i in imports if include_import(i)]
@@ -195,12 +201,36 @@ def perform_detection(django_settings_module_path, project_root_path):
         print("No problems with bidirectional dependencies detected.")
 
 
-def djacoupche():
+def perform_detection_with_manual_input():
     django_settings_module = input(
         "Enter the path to the django settings module of the project (where INSTALLED_APPS can be found):"
     )
     project_root = input("Enter the path to the project root (where manage.py is located):")
     perform_detection(django_settings_module, project_root)
+
+
+def parse_cmd_arguments():
+    import argparse
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--django_settings', metavar='django_settings', type=argparse.FileType(), nargs=1,
+                        help='path to the django settings file (containing INSTALLED_APPS)')
+    parser.add_argument('--project_root', metavar="project_base", type=str, default=".", nargs='?',
+                        help='the root directory for the project (manage.py located there usually)')
+    parser.add_argument('--interactive', metavar='interactive', type=bool, default=False, nargs='?',
+                        help='start utility and ask user all the required parameters.')
+
+    return parser.parse_args()
+
+
+def djacoupche():
+    args_namespace = parse_cmd_arguments()
+
+    if args_namespace.interactive:
+        perform_detection_with_manual_input()
+    else:
+        perform_detection(django_settings_module_path=args_namespace.django_settings[0].name,
+                          project_root_path=args_namespace.project_root)
 
 
 if __name__ == '__main__':
