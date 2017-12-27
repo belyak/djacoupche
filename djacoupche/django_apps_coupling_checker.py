@@ -27,17 +27,25 @@ NODE_PROCESS_FUNCS = {
 }
 
 
-def normalize_relative_imports(current_package, names):
-    def normalize_relative_import(name):
-        if name[0] == "." and name[1] != ".":
-            return current_package + name
+def normalize_relative_imports(packages, names):
+    def normalize_relative_import(name: str):
+        leading_dots_count = len(name) - len(name.lstrip("."))
+
+        if leading_dots_count != 0:
+            return ".".join(packages[:len(packages) - leading_dots_count + 1]) + "." + name.lstrip(".")
         else:
             return name
 
     return list(map(normalize_relative_import, names))
 
 
-def get_module_imports(package_file, module_file):
+def get_packages(project_base, package_file):
+    _project_base, _package_file = os.path.abspath(project_base), os.path.abspath(package_file)
+    packages_path = _package_file[len(_project_base):].lstrip(os.path.sep)
+    return packages_path.split(os.path.sep)
+
+
+def get_module_imports(project_base, package_file, module_file):
     with open(module_file, 'rb') as f:
         module = ast.parse(source=f.read())
 
@@ -49,67 +57,92 @@ def get_module_imports(package_file, module_file):
             continue
 
         result = process_func(node)
-        normalized_result = normalize_relative_imports(current_package=os.path.basename(package_file), names=result)
+        normalized_result = normalize_relative_imports(packages=get_packages(project_base, package_file), names=result)
         module_imports.extend(normalized_result)
 
     return module_imports
 
 
-def get_package_imports(name):
+def get_package_imports(project_base, name):
     print("testing package (application)", name)
     files = [join(name, f) for f in listdir(name) if isfile(join(name, f)) and f.endswith('.py')]
 
     result = []
     for file in files:
         result.extend(
-            get_module_imports(package_file=name, module_file=file)
+            get_module_imports(project_base=project_base, package_file=name, module_file=file)
         )
     return result
+
+
+def get_installed_apps_using_ast_structure(ast_module):
+    extracted_installed_apps = None
+    """:type: list"""
+
+    class AssignNodeVIsitor(ast.NodeVisitor):
+        def visit_Assign(self, node):
+            if len(node.targets) == 1 and isinstance(node.targets[0], ast.Name) and node.targets[0].id == "INSTALLED_APPS":
+                nonlocal extracted_installed_apps
+                if isinstance(node.value, ast.List):
+                    extracted_installed_apps = [n.s for n in node.value.elts]
+
+            self.generic_visit(node)
+
+    AssignNodeVIsitor().visit(ast_module)
+
+    return extracted_installed_apps
+
+
+def get_installed_apps_using_ast_evaluation(ast_module):
+    namespace = globals()
+    co = compile(ast_module, "<ast>", "exec")
+    exec(co, namespace)
+    return namespace.get('INSTALLED_APPS', [])
 
 
 def get_custom_installed_apps(django_settings_module_path, project_root_path):
     with open(django_settings_module_path, "rb") as f:
         module = ast.parse(f.read())
 
-    extracted_installed_apps = None
-    """:type: list"""
+    extracted_installed_apps = get_installed_apps_using_ast_structure(module)
 
-    class AssignNodeVIsitor(ast.NodeVisitor):
-        def visit_Assign(self, node):
-            if len(node.targets) == 1 and node.targets[0].id == "INSTALLED_APPS":
-                nonlocal extracted_installed_apps
-                extracted_installed_apps = [n.s for n in node.value.elts]
-
-            self.generic_visit(node)
-
-    AssignNodeVIsitor().visit(module)
+    if extracted_installed_apps is None:
+        # could not detect INSTALLED_APPS defined as a list, trying to use eval to get the info:
+        extracted_installed_apps = get_installed_apps_using_ast_evaluation(module)
 
     if extracted_installed_apps is None:
         raise ValueError("Cannot find INSTALLED_APPS in file %s!" % django_settings_module_path)
 
-    possible_packages = [join(project_root_path, *app_dir.split(".")) for app_dir in extracted_installed_apps]
+    possible_packages = [join(project_root_path, *app.split(".")) for app in extracted_installed_apps]
     return [p for p in possible_packages if os.path.exists(p)]
 
 
-def populate_modules_and_imports_structure(custom_installed_apps_dirs):
+def populate_modules_and_imports_structure(project_base, custom_installed_apps_dirs):
     modules_and_imports = {}
     for module_path in custom_installed_apps_dirs:
-        module_name = os.path.basename(module_path)
-        modules_and_imports[module_name] = get_package_imports(module_path)
+        module_name = ".".join(get_packages(project_base, module_path))
+        modules_and_imports[module_name] = get_package_imports(project_base, module_path)
     return modules_and_imports
 
 
 def remove_non_project_imports(modules_and_imports, custom_installed_apps):
+    def include_import(i):
+        return any(app in i for app in custom_installed_apps)
+
     for module, imports, in modules_and_imports.items():
-        modules_and_imports[module] = [i for i in imports if i.split(".")[0] in custom_installed_apps]
+        modules_and_imports[module] = [i for i in imports if include_import(i)]
+
     return modules_and_imports
 
 
 def perform_detection(django_settings_module_path, project_root_path):
     custom_installed_apps_dirs = get_custom_installed_apps(django_settings_module_path, project_root_path)
-    custom_installed_apps = [os.path.basename(p) for p in custom_installed_apps_dirs]
 
-    modules_and_imports = populate_modules_and_imports_structure(custom_installed_apps_dirs)
+    custom_installed_apps = []
+    for custom_installed_app_dir in custom_installed_apps_dirs:
+        custom_installed_apps.append(".".join(get_packages(project_root_path, custom_installed_app_dir)))
+
+    modules_and_imports = populate_modules_and_imports_structure(project_root_path, custom_installed_apps_dirs)
     modules_and_imports = remove_non_project_imports(modules_and_imports, custom_installed_apps)
 
     def module_depends_on_another(module_name, another_module_name):
