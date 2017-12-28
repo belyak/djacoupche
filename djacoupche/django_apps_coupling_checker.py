@@ -120,6 +120,10 @@ def get_custom_installed_apps(django_settings_module_path, project_root_path):
     if extracted_installed_apps is None:
         raise ValueError("Cannot find INSTALLED_APPS in file %s!" % django_settings_module_path)
 
+    return filter_custom_installed_apps(extracted_installed_apps, project_root_path)
+
+
+def filter_custom_installed_apps(extracted_installed_apps, project_root_path):
     possible_packages = [join(project_root_path, *app.split(".")) for app in extracted_installed_apps]
     return [p for p in possible_packages if os.path.exists(p)]
 
@@ -142,64 +146,77 @@ def remove_non_project_imports(modules_and_imports, custom_installed_apps):
     return modules_and_imports
 
 
-def perform_detection(django_settings_module_path, project_root_path):
-    custom_installed_apps_dirs = get_custom_installed_apps(django_settings_module_path, project_root_path)
+class Detector:
+    def __init__(self, django_settings_module_path, project_root_path):
+        self.django_settings_module_path = django_settings_module_path
+        self.project_root_path = project_root_path
 
-    custom_installed_apps = []
-    for custom_installed_app_dir in custom_installed_apps_dirs:
-        custom_installed_apps.append(".".join(get_packages(project_root_path, custom_installed_app_dir)))
+    def preform_detection(self):
+        modules_and_imports = self.collect_data()
+        self.analyze(modules_and_imports)
 
-    modules_and_imports = populate_modules_and_imports_structure(project_root_path, custom_installed_apps_dirs)
-    modules_and_imports = remove_non_project_imports(modules_and_imports, custom_installed_apps)
+    def collect_data(self):
+        custom_installed_apps_dirs = self.get_custom_installed_apps()
 
-    def module_depends_on_another(module_name, another_module_name):
-        """checks if module_name has dependency another_module_name (imports from it)"""
-        for i in modules_and_imports[module_name]:
-            if i.startswith(another_module_name):
-                return True
-        return False
+        custom_installed_apps = []
+        for custom_installed_app_dir in custom_installed_apps_dirs:
+            custom_installed_apps.append(".".join(get_packages(self.project_root_path, custom_installed_app_dir)))
 
-    product = set((a, b,) for (a, b,) in itertools.product(modules_and_imports.keys(), repeat=2) if a != b)
-    processed_pairs = set()
+        modules_and_imports = populate_modules_and_imports_structure(self.project_root_path, custom_installed_apps_dirs)
+        return remove_non_project_imports(modules_and_imports, custom_installed_apps)
 
-    applications_dependencies = defaultdict(list)
+    def analyze(self, modules_and_imports):
+        def module_depends_on_another(module_name, another_module_name):
+            """checks if module_name has dependency another_module_name (imports from it)"""
+            for i in modules_and_imports[module_name]:
+                if i.startswith(another_module_name):
+                    return True
+            return False
 
-    pairs_with_bidirectional_dependencies = []
+        product = set((a, b,) for (a, b,) in itertools.product(modules_and_imports.keys(), repeat=2) if a != b)
+        processed_pairs = set()
 
-    print("*" * 40)
-    print("Applications dependencies analysis: ", end='')
+        applications_dependencies = defaultdict(list)
 
-    for module_a, module_b, in product:
-        if (module_a, module_b) in processed_pairs:
-            continue
+        pairs_with_bidirectional_dependencies = []
 
-        a_depends_on_b = module_depends_on_another(module_a, module_b)
-        b_depends_on_a = module_depends_on_another(module_b, module_a)
+        print("*" * 40)
+        print("Applications dependencies analysis: ", end='')
 
-        if a_depends_on_b and b_depends_on_a:
-            pairs_with_bidirectional_dependencies.append((module_a, module_b))
-        elif a_depends_on_b:
-            applications_dependencies[module_a].append(module_b)
-        elif b_depends_on_a:
-            applications_dependencies[module_b].append(module_a)
+        for module_a, module_b, in product:
+            if (module_a, module_b) in processed_pairs:
+                continue
 
-        processed_pairs.update([(module_a, module_b), (module_b, module_a)])
+            a_depends_on_b = module_depends_on_another(module_a, module_b)
+            b_depends_on_a = module_depends_on_another(module_b, module_a)
 
-    print("complete.")
-    print("*" * 40)
-    print("Application dependencies summary:", "\n")
-    for application, deps, in applications_dependencies.items():
-        print("%s depends on %s" % (application, ", ".join(deps) if deps else "[]"))
+            if a_depends_on_b and b_depends_on_a:
+                pairs_with_bidirectional_dependencies.append((module_a, module_b))
+            elif a_depends_on_b:
+                applications_dependencies[module_a].append(module_b)
+            elif b_depends_on_a:
+                applications_dependencies[module_b].append(module_a)
 
-    print()
-    print("*" * 40)
-    if len(pairs_with_bidirectional_dependencies):
-        print("Problems (bidirectional dependencies):", "\n")
-        for m1, m2, in pairs_with_bidirectional_dependencies:
-            text = "*** WARNING: bidirectional dependencies between %s AND %s" % (m1, m2)
-            print(text)
-    else:
-        print("No problems with bidirectional dependencies detected.")
+            processed_pairs.update([(module_a, module_b), (module_b, module_a)])
+
+        print("complete.")
+        print("*" * 40)
+        print("Application dependencies summary:", "\n")
+        for application, deps, in applications_dependencies.items():
+            print("%s depends on %s" % (application, ", ".join(deps) if deps else "[]"))
+
+        print()
+        print("*" * 40)
+        if len(pairs_with_bidirectional_dependencies):
+            print("Problems (bidirectional dependencies):", "\n")
+            for m1, m2, in pairs_with_bidirectional_dependencies:
+                text = "*** WARNING: bidirectional dependencies between %s AND %s" % (m1, m2)
+                print(text)
+        else:
+            print("No problems with bidirectional dependencies detected.")
+
+    def get_custom_installed_apps(self):
+        return get_custom_installed_apps(self.django_settings_module_path, self.project_root_path)
 
 
 def perform_detection_with_manual_input():
@@ -207,7 +224,7 @@ def perform_detection_with_manual_input():
         "Enter the path to the django settings module of the project (where INSTALLED_APPS can be found):"
     )
     project_root = input("Enter the path to the project root (where manage.py is located):")
-    perform_detection(django_settings_module, project_root)
+    Detector(django_settings_module, project_root).preform_detection()
 
 
 def parse_cmd_arguments():
@@ -231,8 +248,9 @@ def djacoupche():
     if args_namespace.interactive:
         perform_detection_with_manual_input()
     else:
-        perform_detection(django_settings_module_path=args_namespace.django_settings[0].name,
-                          project_root_path=args_namespace.project_root)
+        detector = Detector(django_settings_module_path=args_namespace.django_settings[0].name,
+                            project_root_path=args_namespace.project_root)
+        detector.preform_detection()
 
 
 if __name__ == '__main__':
