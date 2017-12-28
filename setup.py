@@ -2,7 +2,7 @@ from setuptools import setup
 
 setup(
     name='djacoupche',
-    version='0.133',
+    version='0.14',
     description='Django applications coupling checker (within concrete project)',
     url='http://github.com/belyak/djacoupche',
     author='Andrey Belyak',
